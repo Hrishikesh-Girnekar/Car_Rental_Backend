@@ -1,7 +1,9 @@
-
 import User from "../models/User.js";
 import Car from "../models/Car.js";
 import Booking from "../models/Booking.js";
+
+// ✅ Import logger
+import { logger } from "../middlewares/logging.js";
 
 export const adminDashboard = async (req, res) => {
   try {
@@ -20,16 +22,35 @@ export const adminDashboard = async (req, res) => {
       returnDate: { $gte: new Date() }
     });
 
+    const totalRevenue = revenue[0]?.total || 0;
+
+    // 🔥 Add logging
+    logger.info("Admin dashboard data fetched", {
+      adminId: req.user?._id,
+      totalUsers,
+      totalCars,
+      totalBookings,
+      pendingBookings,
+      activeRentals,
+      totalRevenue,
+      requestId: req.id,
+    });
+
     res.json({
       totalUsers,
       totalCars,
       totalBookings,
       pendingBookings,
       activeRentals,
-      totalRevenue: revenue[0]?.total || 0
+      totalRevenue,
     });
 
   } catch (error) {
+    logger.error("Admin dashboard error", {
+      message: error.message,
+      requestId: req.id,
+    });
+
     res.status(500).json({ message: "Admin dashboard error" });
   }
 };

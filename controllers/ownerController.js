@@ -4,122 +4,194 @@ import User from "../models/User.js";
 import Booking from "../models/Booking.js";
 import fs from "fs";
 
+// ✅ Import logger
+import { logger, vehicleLogger } from "../middlewares/logging.js";
+
 // Change Role
 export const changeRoleToOwner = async (req, res) => {
   try {
     const { _id } = req.user;
+
     await User.findByIdAndUpdate(_id, { role: "owner" });
+
+    logger.info("User role updated to owner", {
+      userId: _id,
+      requestId: req.id,
+    });
+
     res.json({ success: true, message: "Now you can lists cars" });
   } catch (e) {
-    console.log(e.message);
+    logger.error("Change role failed", {
+      message: e.message,
+      requestId: req.id,
+    });
+
     res.json({ success: false, message: e.message });
   }
 };
 
-// Add Car
+//  Add Car
 export const addCar = async (req, res) => {
   try {
     const { _id } = req.user;
-    console.log(req.body.carData);
 
     let car = JSON.parse(req.body.carData);
     const imageFile = req.file;
 
     const fileBuffer = fs.createReadStream(imageFile.path);
 
-    // Upload image to imagekit
     const response = await imagekit.files.upload({
       file: fileBuffer,
       fileName: imageFile.originalname,
       folder: "/cars",
     });
 
-    // optimization through imagkit url transformation
     const optimizedImageUrl = imagekit.helper.buildSrc({
       urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT,
       src: response.filePath,
       transformation: [
-        { width: 1280 }, //Width resizing
-        { quality: "auto" }, //Auto Compression
-        { format: "webp" }, //Convert to modern format
+        { width: 1280 },
+        { quality: "auto" },
+        { format: "webp" },
       ],
     });
 
     const image = optimizedImageUrl;
 
-    await Car.create({ ...car, owner: _id, image });
+    const newCar = await Car.create({ ...car, owner: _id, image });
+
+    vehicleLogger.added(newCar._id);
+
+    logger.info("Car added successfully", {
+      carId: newCar._id,
+      ownerId: _id,
+      requestId: req.id,
+    });
+
     res.json({ success: true, message: "Car Added" });
   } catch (error) {
-    console.log(error.message);
+    logger.error("Add car failed", {
+      message: error.message,
+      requestId: req.id,
+    });
+
     res.json({ success: false, message: error.message });
   }
 };
 
-// List all cars of owner
+// 📋 Owner Cars
 export const getOwnerCars = async (req, res) => {
   try {
     const { _id } = req.user;
+
     const cars = await Car.find({ owner: _id });
+
+    logger.info("Fetched owner cars", {
+      ownerId: _id,
+      count: cars.length,
+      requestId: req.id,
+    });
+
     res.json({ success: true, cars });
   } catch (e) {
-    console.log(error.message);
-    res.json({ success: false, message: error.message });
+    logger.error("Fetching owner cars failed", {
+      message: e.message,
+      requestId: req.id,
+    });
+
+    res.json({ success: false, message: e.message });
   }
 };
 
-// Toggle Availability
+// 🔁 Toggle Availability
 export const toggleCarAvailability = async (req, res) => {
   try {
     const { _id } = req.user;
     const { carId } = req.body;
+
     const car = await Car.findById(carId);
 
-    // Checking is car belongs to the user
     if (car.owner.toString() !== _id.toString()) {
+      logger.warn("Unauthorized toggle attempt", {
+        userId: _id,
+        carId,
+        requestId: req.id,
+      });
+
       return res.json({ success: false, message: "Unauthorized" });
     }
 
     car.isAvailable = !car.isAvailable;
     await car.save();
 
+    logger.info("Car availability toggled", {
+      carId,
+      ownerId: _id,
+      newStatus: car.isAvailable,
+      requestId: req.id,
+    });
+
     res.json({ success: true, message: "Availability Toggled" });
   } catch (error) {
-    console.log(error.message);
+    logger.error("Toggle availability failed", {
+      message: error.message,
+      requestId: req.id,
+    });
+
     res.json({ success: false, message: error.message });
   }
 };
 
-// Delete a car
+// ❌ Delete Car (Soft delete)
 export const deleteCar = async (req, res) => {
   try {
     const { _id } = req.user;
     const { carId } = req.body;
+
     const car = await Car.findById(carId);
 
-    // Checking is car belongs to the user
     if (car.owner.toString() !== _id.toString()) {
+      logger.warn("Unauthorized car delete attempt", {
+        userId: _id,
+        carId,
+        requestId: req.id,
+      });
+
       return res.json({ success: false, message: "Unauthorized" });
     }
 
-    // Why are we not deleting the car directly? => because if someone has previously booked this car, history should be there to see the details of the car.
     car.owner = null;
     car.isAvailable = false;
     await car.save();
 
+    logger.info("Car soft deleted", {
+      carId,
+      previousOwner: _id,
+      requestId: req.id,
+    });
+
     res.json({ success: true, message: "Car Removed" });
   } catch (error) {
-    console.log(error.message);
+    logger.error("Delete car failed", {
+      message: error.message,
+      requestId: req.id,
+    });
+
     res.json({ success: false, message: error.message });
   }
 };
 
-// Get Dashboard Data
-//Incomplete
+// 📊 Dashboard Data
 export const getDashboardData = async (req, res) => {
   try {
     const { _id, role } = req.user;
 
     if (role !== "owner") {
+      logger.warn("Unauthorized dashboard access", {
+        userId: _id,
+        requestId: req.id,
+      });
+
       return res.json({ success: false, message: "Unauthorized" });
     }
 
@@ -132,65 +204,83 @@ export const getDashboardData = async (req, res) => {
       owner: _id,
       status: "pending",
     });
+
     const completedBookings = await Booking.find({
       owner: _id,
       status: "confirmed",
     });
 
-    // Calculate monthlyRevenue from bookings where status is confirmed
     const monthlyRevenue = bookings
-      .slice()
-      .filter((booking) => booking.status === "confirmed")
-      .reduce((acc, booking) => acc + booking.price, 0);
+      .filter((b) => b.status === "confirmed")
+      .reduce((acc, b) => acc + b.price, 0);
 
-    const dashboardData = {
+    logger.info("Dashboard data fetched", {
+      ownerId: _id,
       totalCars: cars.length,
       totalBookings: bookings.length,
-      pendingBookings: pendingBookings.length,
-      completedBookings: completedBookings.length,
-      recentBookings: bookings.slice(0, 3),
-      monthlyRevenue,
-    };
+      revenue: monthlyRevenue,
+      requestId: req.id,
+    });
 
-    res.json({ success: true, dashboardData });
+    res.json({
+      success: true,
+      dashboardData: {
+        totalCars: cars.length,
+        totalBookings: bookings.length,
+        pendingBookings: pendingBookings.length,
+        completedBookings: completedBookings.length,
+        recentBookings: bookings.slice(0, 3),
+        monthlyRevenue,
+      },
+    });
   } catch (e) {
-    console.log(e.message);
+    logger.error("Dashboard fetch failed", {
+      message: e.message,
+      requestId: req.id,
+    });
+
     res.json({ success: false, message: e.message });
   }
 };
 
-// Update user image
+// 🖼️ Update User Image
 export const updateUserImage = async (req, res) => {
   try {
-
     const { _id } = req.user;
     const imageFile = req.file;
 
     const fileBuffer = fs.createReadStream(imageFile.path);
 
-    // Upload image to imagekit
     const response = await imagekit.files.upload({
       file: fileBuffer,
       fileName: imageFile.originalname,
       folder: "/users",
     });
 
-    // optimization through imagkit url transformation
     const optimizedImageUrl = imagekit.helper.buildSrc({
       urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT,
       src: response.filePath,
       transformation: [
-        { width: 400 }, //Width resizing
-        { quality: "auto" }, //Auto Compression
-        { format: "webp" }, //Convert to modern format
+        { width: 400 },
+        { quality: "auto" },
+        { format: "webp" },
       ],
     });
 
-    const image = optimizedImageUrl;
-    await User.findByIdAndUpdate(_id, {image});
-    res.json({success:true, message: "Image Updated"})
+    await User.findByIdAndUpdate(_id, { image: optimizedImageUrl });
+
+    logger.info("User image updated", {
+      userId: _id,
+      requestId: req.id,
+    });
+
+    res.json({ success: true, message: "Image Updated" });
   } catch (e) {
-     console.log(e.message);
+    logger.error("Update user image failed", {
+      message: e.message,
+      requestId: req.id,
+    });
+
     res.json({ success: false, message: e.message });
   }
 };
